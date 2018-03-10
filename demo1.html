@@ -1,0 +1,238 @@
+<html>
+<head>
+    <script type="text/javascript" src="js/visjs/vis.js"></script>
+    <link href="js/visjs/vis.css" rel="stylesheet" type="text/css"/>
+    <script type="text/javascript" src="js/jquery/jquery-2.2.1.js"></script>
+    <script type="text/javascript" src="js/jquery/jquery.knob.js"></script>
+    <script type="text/javascript" src="js/http.js"></script>
+    <script type="text/javascript" src="js/common.js"></script>
+    <meta charset="utf-8">
+
+<style>
+    #center {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        flex-wrap: wrap;
+    }
+</style>
+
+<body onload="start()">
+
+<div id="center">
+    <input id="dial" type="text" value="0" data-thickness=".1" data-width="100" data-readOnly=true>
+</div>
+
+<div id="canvas"></div>
+</body>
+</html>
+
+<script type="text/javascript">
+    $(function() {
+        $("#dial").knob();
+    });
+
+    var nodes = new vis.DataSet({});
+    var edges = new vis.DataSet({});
+
+    var network = {
+        nodes: nodes,
+        edges: edges
+    };
+
+    var options = {
+        layout: {
+            hierarchical: {
+                sortMethod: 'directed',
+                direction: 'UD'
+            }
+        },
+        interaction: {dragNodes: false},
+        edges: {
+            smooth: {
+                type: 'cubicBezier',
+                forceDirection: 'vertical',
+                roundness: 0.4
+            }
+        },
+        physics: {
+            enabled: false
+        },
+        nodes: {
+            shape: 'dot'
+        }
+    };
+
+    var tanksQueue = [];
+    var idx = 0;
+
+    var tanksCount = 0;
+    const tanksLimit = 10;
+
+    function addEdgeToNewTankNode(data, parentTankIdx, parentTankPriceXP) {
+        var tankNode = {
+            id: ++idx,
+            label: valid(data.name),
+            title: valid(data.name),
+            size: 40
+        };
+
+        nodes.add(tankNode);
+
+        if (parentTankIdx != null) {
+            edges.add({
+                from: valid(parentTankIdx),
+                to: valid(tankNode.id),
+                length: valid(parentTankPriceXP),
+                label: valid(parentTankPriceXP) + ' XP',
+                title: valid(parentTankPriceXP) + ' XP',
+                arrows: 'to'
+            });
+        }
+
+        return valid(tankNode.id);
+    }
+
+    function enqueueModulesQueue(modulesQueue, defaultModules, tankNodeIdx) {
+        Object.keys(defaultModules).forEach(function (key) {
+            var moduleId = defaultModules[key];
+
+            if (moduleId != null) {
+                modulesQueue.push({
+                    parentIdx: valid(tankNodeIdx),
+                    moduleId: valid(moduleId)
+                });
+            }
+        });
+    }
+
+    function addEdgeToNewModuleNode(module, parentIdx) {
+        var moduleNode = {
+            id: ++idx,
+            label: valid(module.type) + '\n' + valid(module.name),
+            title: valid(module.type) + '\n' + valid(module.name),
+            size: 10
+        };
+
+        nodes.add(moduleNode);
+
+        edges.add({
+            from: valid(parentIdx),
+            to: valid(moduleNode.id),
+            length: valid(module.price_xp),
+            label: valid(module.price_xp) + ' XP',
+            title: valid(module.price_xp) + ' XP',
+            arrows: 'to'
+        });
+
+        return valid(moduleNode.id);
+    }
+
+    function dequeueModulesQueue(modulesQueue, allModules, data) {
+        while (modulesQueue.length > 0) {
+            var obj = modulesQueue.shift();
+            var parentIdx = obj.parentIdx;
+            var moduleId = obj.moduleId;
+
+            var module = allModules[moduleId];
+            var moduleNodeIdx = addEdgeToNewModuleNode(module, parentIdx);
+
+            if (module.next_modules != null) {
+                Object.keys(module.next_modules).forEach(function (key) {
+                    var childModuleId = valid(module.next_modules[key]);
+
+                    modulesQueue.push({
+                        parentIdx: valid(moduleNodeIdx),
+                        moduleId: valid(childModuleId)
+                    });
+                });
+            }
+
+            if (module.next_tanks != null) {
+                Object.keys(module.next_tanks).forEach(function (key) {
+                    var childTankId = valid(module.next_tanks[key]);
+
+                    tanksQueue.push({
+                        parentIdx: valid(moduleNodeIdx),
+                        priceXP: valid(data.next_tanks[childTankId]),
+                        tankId: valid(childTankId)
+                    });
+                });
+            }
+        }
+    }
+
+    
+    function updateNetwork(json, parentTankIdx, parentTankPriceXP) {
+        Object.keys(json.data).forEach(function (key) {
+
+            var data = json.data[key];
+            var tankNodeIdx = addEdgeToNewTankNode(data, parentTankIdx, parentTankPriceXP);
+
+            var modulesQueue = [];
+            var defaultModules = data.default_profile.modules;
+            var allModules = data.modules_tree;
+
+            enqueueModulesQueue(modulesQueue, defaultModules, tankNodeIdx);
+            dequeueModulesQueue(modulesQueue, allModules, data);
+        });
+    }
+
+    function start() {
+        $('#dial').trigger(
+                'configure',
+                {
+                    "min": 0,
+                    "max": tanksLimit
+                }
+        );
+
+        var parentTankIdx = null;
+        var parentTankPriceXP = null;
+
+        var callback = {
+            success: function (response) {
+                $('#dial')
+                        .val(tanksCount + 1)
+                        .trigger('change');
+
+                console.log('callback.success', tanksCount + '/' + tanksLimit);
+                updateNetwork(JSON.parse(response), parentTankIdx, parentTankPriceXP);
+
+                if ((++tanksCount <= tanksLimit) && (tanksQueue.length > 0)) {
+                    var obj = tanksQueue.shift();
+                    parentTankIdx = valid(obj.parentIdx);
+                    parentTankPriceXP = valid(obj.priceXP);
+                    var tankId = valid(obj.tankId);
+
+                    $http(url + tankId).get(payload)
+                            .then(callback.success)
+                            .catch(callback.error);
+                } else {
+                    $('#center').hide();
+
+                    console.log('start rendering');
+                    new vis.Network(document.getElementById('canvas'), network, options);
+                    console.log('stop rendering');
+
+                    $('#dial')
+                            .val(0)
+                            .trigger('change');
+                }
+            },
+            error: function (data) {
+                console.error('callback.error', data);
+            }
+        };
+
+        var tankId = 3329;
+        $http(url + tankId).get(payload)
+                .then(callback.success)
+                .catch(callback.error);
+    }
+</script>

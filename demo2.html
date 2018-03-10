@@ -1,0 +1,254 @@
+<html>
+<head>
+    <script type="text/javascript" src="js/visjs/vis.js"></script>
+    <link href="js/visjs/vis.css" rel="stylesheet" type="text/css"/>
+    <script type="text/javascript" src="js/data/vehicles.js"></script>
+    <script type="text/javascript" src="js/common.js"></script>
+    <meta charset="utf-8">
+<body onload="start()">
+<div id="canvas"></div>
+</body>
+</html>
+
+<script type="text/javascript">
+    const nodes = new vis.DataSet({});
+    const edges = new vis.DataSet({});
+
+    const network = {
+        nodes: nodes,
+        edges: edges
+    };
+
+    const options = {
+        layout: {
+            hierarchical: {
+                sortMethod: 'directed',
+                direction: 'UD',
+                "enabled": true,
+                "levelSeparation": 180,
+                "nodeSpacing": 100,
+                "treeSpacing": 100,
+                "edgeMinimization": false
+            }
+        },
+        interaction: {dragNodes: false},
+        edges: {
+            smooth: {
+                type: 'cubicBezier',
+                forceDirection: 'vertical',
+                roundness: 0.5
+            }
+        },
+        physics: {
+            enabled: false
+        },
+//        configure: {
+//            filter: function (option, path) {
+//                return (path.indexOf('hierarchical') !== -1);
+//            }
+//        },
+        nodes: {
+            shape: 'dot'
+        }
+    };
+
+    const tankIdToTankNode = {};
+
+    const tanksQueue = [];
+    var idx = 0;
+
+    var tanksCount = 0;
+    const tanksLimit = 20;
+
+    function addEdgeToExistingTankNode(data, parentTankIdx, parentTankPriceXP) {
+        const tankNode = valid(tankIdToTankNode[valid(data.tank_id)]);
+        console.log('tank node already added', valid(data.tank_id), valid(vehicles.data[valid(data.tank_id)]).name);
+
+        edges.add({
+            from: valid(parentTankIdx),
+            to: valid(valid(tankNode.id)),
+            length: valid(parentTankPriceXP),
+            label: valid(parentTankPriceXP) + ' XP',
+            title: valid(parentTankPriceXP) + ' XP',
+            color: 'red',
+            arrows: 'to'
+        });
+    }
+
+    function addEdgeToNewTankNode(data, parentTankIdx, parentTankPriceXP) {
+        const tankLevel = valid(data.tier) * 5;
+
+        const tankNode = {
+            id: ++idx,
+            group: valid(data.type),
+            label: valid(data.name),
+            title: valid(data.name),
+            level: valid(tankLevel),
+            size: 50
+        };
+
+        console.log('add tank node', valid(data.tank_id), valid(data.name));
+
+        nodes.add(tankNode);
+        tankIdToTankNode[valid(data.tank_id)] = valid(tankNode);
+
+        if (parentTankIdx != null) {
+            edges.add({
+                from: valid(parentTankIdx),
+                to: valid(tankNode.id),
+                length: valid(parentTankPriceXP),
+                label: valid(parentTankPriceXP) + ' XP',
+                title: valid(parentTankPriceXP) + ' XP',
+                arrows: 'to'
+            });
+        }
+
+        return tankNode;
+    }
+
+    function enqueueModulesQueue(modulesQueue, defaultModules, tankNodeIdx, tankNodeLevel) {
+        Object.keys(defaultModules).forEach(function (key) {
+            const moduleId = defaultModules[key];
+
+            if (moduleId != null) {
+                modulesQueue.push({
+                    parentIdx: valid(tankNodeIdx),
+                    parentLevel: valid(tankNodeLevel),
+                    moduleId: valid(moduleId)
+                });
+            }
+        });
+    }
+
+    function addEdgeToNewModuleNode(module, parentIdx, parentLevel) {
+        const level = valid(parentLevel) + 1;
+
+        const moduleNode = {
+            id: ++idx,
+            label: valid(module.type) + '\n' + valid(module.name),
+            title: valid(module.type) + '\n' + valid(module.name),
+            level: level,
+            size: 10
+        };
+
+        nodes.add(moduleNode);
+
+        edges.add({
+            from: valid(parentIdx),
+            to: valid(moduleNode.id),
+            length: valid(module.price_xp),
+            label: valid(module.price_xp) + ' XP',
+            title: valid(module.price_xp) + ' XP',
+            arrows: 'to'
+        });
+
+        return valid(moduleNode);
+    }
+
+    
+    function dequeueModulesQueue(modulesQueue, allModules, data) {
+        while (modulesQueue.length > 0) {
+            const moduleObj = modulesQueue.shift();
+            const parentIdx = valid(moduleObj.parentIdx);
+            const parentLevel = valid(moduleObj.parentLevel);
+            const moduleId = valid(moduleObj.moduleId);
+
+            const module = allModules[moduleId];
+
+            const moduleNode = addEdgeToNewModuleNode(module, parentIdx, parentLevel);
+            const moduleNodeIdx = valid(moduleNode.id);
+
+            if (module.next_modules != null) {
+                Object.keys(module.next_modules).forEach(function (key) {
+                    const moduleId = valid(module.next_modules[key]);
+
+                    modulesQueue.push({
+                        parentIdx: valid(moduleNodeIdx),
+                        parentLevel: valid(moduleNode.level),
+                        moduleId: valid(moduleId)
+                    });
+                });
+            }
+
+            if (module.next_tanks != null) {
+                Object.keys(module.next_tanks).forEach(function (key) {
+                    const tankId = valid(module.next_tanks[key]);
+                    console.log('push tank', tankId, vehicles.data[valid(tankId)].name);
+
+                    tanksQueue.push({
+                        parentIdx: valid(moduleNodeIdx),
+                        priceXP: valid(data.next_tanks[tankId]),
+                        tankId: valid(tankId)
+                    });
+                });
+            }
+        }
+    }
+
+    // add tanks that don't require any modules to be researched
+    function enqueueTanksQueue(data, tankNode) {
+        const tankIds = {};
+        Object.keys(data.modules_tree).forEach(function (key) {
+            const nextTanks = data.modules_tree[key].next_tanks;
+            if (nextTanks != null) {
+                for (var i = 0; i < nextTanks.length; i++) {
+                    tankIds[nextTanks[i]] = true;
+                }
+            }
+        });
+
+        if (data.next_tanks != null) {
+            Object.keys(data.next_tanks).forEach(function (key) {
+                if (tankIds[key] != true) {
+                    console.log('push direct tank', key, valid(vehicles.data[valid(key)].name));
+
+                    tanksQueue.push({
+                        parentIdx: valid(tankNode.id),
+                        priceXP: valid(data.next_tanks[valid(key)]),
+                        tankId: valid(key)
+                    });
+                }
+            });
+        }
+    }
+
+    function updateNetwork(tankId, parentTankIdx, parentTankPriceXP, callback) {
+        const data = valid(vehicles.data[valid(tankId)]);
+
+        if (tankIdToTankNode[valid(data.tank_id)] != null) {
+            addEdgeToExistingTankNode(data, parentTankIdx, parentTankPriceXP);
+        } else {
+            const tankNode = addEdgeToNewTankNode(data, parentTankIdx, parentTankPriceXP);
+
+            const defaultModules = data.default_profile.modules;
+            const allModules = data.modules_tree;
+
+            const modulesQueue = [];
+            enqueueModulesQueue(modulesQueue, defaultModules, valid(tankNode.id), valid(tankNode.level));
+            dequeueModulesQueue(modulesQueue, allModules, data);
+
+            enqueueTanksQueue(data, tankNode);
+        }
+
+        callback.success();
+    }
+
+    function start() {
+        const callback = {
+            success: function () {
+                console.log('callback.success', tanksCount + '/' + tanksLimit);
+
+                if ((++tanksCount <= tanksLimit) && (tanksQueue.length > 0)) {
+                    const tankObj = tanksQueue.shift();
+                    updateNetwork(valid(tankObj.tankId), valid(tankObj.parentIdx), valid(tankObj.priceXP), callback);
+                } else {
+                    console.log('start rendering');
+                    new vis.Network(document.getElementById('canvas'), network, options);
+                    console.log('stop rendering');
+                }
+            }
+        };
+
+        updateNetwork(3329, null, null, callback);
+    }
+</script>
